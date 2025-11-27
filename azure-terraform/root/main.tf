@@ -1,23 +1,14 @@
-terraform {
-  required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 4.0"
-    }
-  }
-}
-
-provider "azurerm" {
-  features {}
-  subscription_id = var.subscription_id
-}
-
 # ------------------------------
 # 1. Resource Group
 # ------------------------------
 resource "azurerm_resource_group" "dr_rg" {
   name     = "dr-azure-rg"
   location = var.location
+
+    tags = {
+    Environment = "DR"
+    Purpose     = "AWS-Azure-Hybrid-VPN"
+  }
 }
 
 # ------------------------------
@@ -66,6 +57,43 @@ resource "azurerm_network_security_group" "dr_nsg" {
     source_port_range          = "*"
     destination_port_range     = "22"
     source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  # VPN 트래픽 허용 추가
+  security_rule {
+    name                       = "allow-ipsec-ike"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Udp"
+    source_port_range          = "*"
+    destination_port_range     = "500"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "allow-ipsec-nat-t"
+    priority                   = 111
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Udp"
+    source_port_range          = "*"
+    destination_port_range     = "4500"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  security_rule {
+    name                       = "allow-mysql-from-aws"
+    priority                   = 120
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "3306"
+    source_address_prefix      = "10.1.0.0/16"
     destination_address_prefix = "*"
   }
 }
@@ -152,73 +180,4 @@ resource "azurerm_linux_virtual_machine" "dr_vm" {
     sudo systemctl enable nginx
   EOF
   )
-}
-
-# ------------------------------
-# Variables
-# ------------------------------
-variable "subscription_id" {
-  description = "Azure Subscription ID"
-  type        = string
-  # 실행 시: export TF_VAR_subscription_id="7adc47d6-5071-4675-9c57-70443589cb62"
-}
-
-variable "location" {
-  description = "Azure region for DR"
-  type        = string
-  default     = "koreacentral"  # 소문자, 공백 없이
-}
-
-variable "vm_size" {
-  description = "VM Size (Free Tier: B1s)"
-  type        = string
-  default     = "Standard_B1s"  # Free Tier: 750시간/월 무료
-  # 참고: B1ls는 더 저렴하지만 성능이 매우 낮음
-}
-
-variable "admin_username" {
-  description = "Admin username for VM"
-  type        = string
-  default     = "azureuser"
-}
-
-variable "ssh_public_key_path" {
-  description = "Path to SSH public key"
-  type        = string
-  default     = "~/.ssh/id_rsa.pub"
-  # Windows: "C:/Users/soldesk/.ssh/id_rsa.pub"
-  # Linux/Mac: "~/.ssh/id_rsa.pub"
-}
-
-# ------------------------------
-# Outputs
-# ------------------------------
-output "resource_group_name" {
-  description = "Resource Group name"
-  value       = azurerm_resource_group.dr_rg.name
-}
-
-output "public_ip" {
-  description = "Public IP address (Dynamic - allocated after VM starts)"
-  value       = azurerm_public_ip.dr_public_ip.ip_address
-}
-
-output "vm_name" {
-  description = "VM name"
-  value       = azurerm_linux_virtual_machine.dr_vm.name
-}
-
-output "vm_id" {
-  description = "VM resource ID"
-  value       = azurerm_linux_virtual_machine.dr_vm.id
-}
-
-output "ssh_command" {
-  description = "SSH connection command"
-  value       = "ssh ${var.admin_username}@${azurerm_public_ip.dr_public_ip.ip_address}"
-}
-
-output "web_url" {
-  description = "Web server URL"
-  value       = "http://${azurerm_public_ip.dr_public_ip.ip_address}"
 }
