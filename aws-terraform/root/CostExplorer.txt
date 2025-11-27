@@ -1,0 +1,348 @@
+# ============================================
+# AWS Budgets - 예산 알림
+# ============================================
+
+# SNS 토픽 생성 (알림 받을 곳)
+resource "aws_sns_topic" "billing_alerts" {
+  name = "billing-alerts"
+
+  tags = {
+    Name = "billing-alerts"
+  }
+}
+
+# SNS 이메일 구독 (이메일 주소는 AWS 콘솔에서 확인 필요)
+resource "aws_sns_topic_subscription" "billing_email" {
+  topic_arn = aws_sns_topic.billing_alerts.arn
+  protocol  = "email"
+  endpoint  = "your-email@example.com"  # 실제 이메일로 변경
+}
+
+# 월별 예산 설정
+resource "aws_budgets_budget" "monthly_budget" {
+  name              = "monthly-ecs-budget"
+  budget_type       = "COST"
+  limit_amount      = "100.0"  # 월 100달러 예산
+  limit_unit        = "USD"
+  time_unit         = "MONTHLY"
+  time_period_start = "2024-01-01_00:00"
+
+  # 비용 필터 (ECS 관련 비용만)
+  cost_filter {
+    name = "Service"
+    values = [
+      "Amazon Elastic Container Service",
+      "EC2 - Other",  # Fargate 비용
+      "Amazon Elastic Load Balancing",
+      "Amazon CloudWatch"
+    ]
+  }
+
+  # 80% 도달 시 알림
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_sns_topic_arns  = [aws_sns_topic.billing_alerts.arn]
+  }
+
+  # 100% 도달 시 알림
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_sns_topic_arns  = [aws_sns_topic.billing_alerts.arn]
+  }
+
+  # 예상 비용이 100% 초과할 것으로 예측될 때 알림
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "FORECASTED"
+    subscriber_sns_topic_arns  = [aws_sns_topic.billing_alerts.arn]
+  }
+}
+
+# 일별 예산 설정 (개발 중 급격한 비용 증가 감지)
+resource "aws_budgets_budget" "daily_budget" {
+  name              = "daily-cost-limit"
+  budget_type       = "COST"
+  limit_amount      = "10.0"  # 일 10달러 제한
+  limit_unit        = "USD"
+  time_unit         = "DAILY"
+  time_period_start = "2024-01-01_00:00"
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_sns_topic_arns  = [aws_sns_topic.billing_alerts.arn]
+  }
+}
+
+# ============================================
+# CloudWatch - 상세 비용 모니터링
+# ============================================
+
+# ECS 태스크 수 모니터링 (비용 직접 연관)
+resource "aws_cloudwatch_metric_alarm" "frontend_task_count" {
+  alarm_name          = "frontend-task-count-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "DesiredTaskCount"
+  namespace           = "ECS/ContainerInsights"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "5"  # 5개 이상이면 알림
+  alarm_description   = "Frontend task count is unusually high"
+  alarm_actions       = [aws_sns_topic.billing_alerts.arn]
+
+  dimensions = {
+    ClusterName = aws_ecs_cluster.main.name
+    ServiceName = aws_ecs_service.frontend.name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "backend_task_count" {
+  alarm_name          = "backend-task-count-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "1"
+  metric_name         = "DesiredTaskCount"
+  namespace           = "ECS/ContainerInsights"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "5"
+  alarm_description   = "Backend task count is unusually high"
+  alarm_actions       = [aws_sns_topic.billing_alerts.arn]
+
+  dimensions = {
+    ClusterName = aws_ecs_cluster.main.name
+    ServiceName = aws_ecs_service.backend.name
+  }
+}
+
+# ALB 활성 연결 수 모니터링
+resource "aws_cloudwatch_metric_alarm" "alb_active_connections" {
+  alarm_name          = "alb-active-connections-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "ActiveConnectionCount"
+  namespace           = "AWS/ApplicationELB"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "1000"
+  alarm_description   = "High number of ALB connections"
+  alarm_actions       = [aws_sns_topic.billing_alerts.arn]
+
+  dimensions = {
+    LoadBalancer = aws_lb.frontend.arn_suffix
+  }
+}
+
+# ============================================
+# Cost Allocation Tags
+# ============================================
+
+# 리소스에 비용 추적용 태그 추가
+locals {
+  common_tags = {
+    Project     = "web-application"
+    Environment = "production"
+    ManagedBy   = "terraform"
+    CostCenter  = "engineering"
+    Owner       = "team-name"
+  }
+}
+
+# ECS 클러스터에 태그 적용 예시
+resource "aws_ecs_cluster" "main_with_tags" {
+  name = "web-app-cluster"
+
+  tags = merge(
+    local.common_tags,
+    {
+      Service = "container-orchestration"
+    }
+  )
+}
+
+# ============================================
+# Custom CloudWatch Dashboard
+# ============================================
+
+resource "aws_cloudwatch_dashboard" "cost_monitoring" {
+  dashboard_name = "cost-and-usage-monitoring"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["AWS/ECS", "CPUUtilization", { stat = "Average", label = "Frontend CPU" }],
+            ["...", { stat = "Average", label = "Backend CPU" }],
+            [".", "MemoryUtilization", { stat = "Average", label = "Frontend Memory" }],
+            ["...", { stat = "Average", label = "Backend Memory" }]
+          ]
+          period = 300
+          stat   = "Average"
+          region = "ap-northeast-2"
+          title  = "ECS Resource Utilization"
+          yAxis = {
+            left = {
+              min = 0
+              max = 100
+            }
+          }
+        }
+      },
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["ECS/ContainerInsights", "DesiredTaskCount", 
+             { "ClusterName" = aws_ecs_cluster.main.name, "ServiceName" = "frontend-service" }],
+            ["...", 
+             { "ClusterName" = aws_ecs_cluster.main.name, "ServiceName" = "backend-service" }]
+          ]
+          period = 300
+          stat   = "Average"
+          region = "ap-northeast-2"
+          title  = "Task Count (Cost Driver)"
+        }
+      },
+      {
+        type = "metric"
+        properties = {
+          metrics = [
+            ["AWS/ApplicationELB", "RequestCount", { stat = "Sum" }],
+            [".", "TargetResponseTime", { stat = "Average" }]
+          ]
+          period = 300
+          region = "ap-northeast-2"
+          title  = "ALB Traffic"
+        }
+      },
+      {
+        type = "log"
+        properties = {
+          query   = "SOURCE '/ecs/frontend' | SOURCE '/ecs/backend' | fields @timestamp, @message | sort @timestamp desc | limit 20"
+          region  = "ap-northeast-2"
+          title   = "Recent Logs"
+        }
+      }
+    ]
+  })
+}
+
+# ============================================
+# Lambda - 비용 리포트 자동 생성 (고급)
+# ============================================
+
+# Lambda 실행 역할
+resource "aws_iam_role" "cost_report_lambda_role" {
+  name = "cost-report-lambda-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "lambda.amazonaws.com"
+      }
+    }]
+  })
+}
+
+# Cost Explorer 접근 권한
+resource "aws_iam_role_policy" "cost_explorer_access" {
+  name = "cost-explorer-access"
+  role = aws_iam_role.cost_report_lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ce:GetCostAndUsage",
+          "ce:GetCostForecast"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sns:Publish"
+        ]
+        Resource = aws_sns_topic.billing_alerts.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_basic" {
+  role       = aws_iam_role.cost_report_lambda_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# Lambda 함수
+resource "aws_lambda_function" "weekly_cost_report" {
+  filename      = "cost_report_lambda.zip"  # 아래 Python 코드를 zip으로
+  function_name = "weekly-cost-report"
+  role          = aws_iam_role.cost_report_lambda_role.arn
+  handler       = "lambda_function.lambda_handler"
+  runtime       = "python3.11"
+  timeout       = 60
+
+  environment {
+    variables = {
+      SNS_TOPIC_ARN = aws_sns_topic.billing_alerts.arn
+    }
+  }
+}
+
+# EventBridge - 매주 월요일 오전 9시 실행
+resource "aws_cloudwatch_event_rule" "weekly_cost_report" {
+  name                = "weekly-cost-report"
+  description         = "Trigger weekly cost report"
+  schedule_expression = "cron(0 9 ? * MON *)"  # 매주 월요일 9시 (UTC)
+}
+
+resource "aws_cloudwatch_event_target" "lambda_target" {
+  rule      = aws_cloudwatch_event_rule.weekly_cost_report.name
+  target_id = "WeeklyCostReportLambda"
+  arn       = aws_lambda_function.weekly_cost_report.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.weekly_cost_report.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.weekly_cost_report.arn
+}
+
+# ============================================
+# Outputs
+# ============================================
+
+output "sns_topic_arn" {
+  description = "SNS Topic ARN for billing alerts"
+  value       = aws_sns_topic.billing_alerts.arn
+}
+
+output "cloudwatch_dashboard_url" {
+  description = "CloudWatch Dashboard URL"
+  value       = "https://console.aws.amazon.com/cloudwatch/home?region=ap-northeast-2#dashboards:name=${aws_cloudwatch_dashboard.cost_monitoring.dashboard_name}"
+}
+
+output "cost_explorer_url" {
+  description = "AWS Cost Explorer URL"
+  value       = "https://console.aws.amazon.com/cost-management/home?region=ap-northeast-2#/cost-explorer"
+}

@@ -1,0 +1,37 @@
+# ----------------------------------------
+# Terraform 관련 파일 (필수 제외)
+# ----------------------------------------
+# terraform init 시 생성되는 로컬 백엔드/플러그인/모듈 디렉토리
+.terraform/
+.terraform.lock.hcl
+
+# Terraform 상태 파일 (State files) - 보안상 절대 공유/커밋 금지
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Terraform Plan 결과 파일
+*.tfplan
+*.tfplan.binary
+
+# 백업 파일 (Backup files)
+*~
+.vscode/.language_service_cache
+
+# ----------------------------------------
+# 런타임/로컬 환경 파일 (Windows 환경)
+# ----------------------------------------
+# 사용자님의 이전 푸시 실패 원인이었던 실행 파일들
+# 로컬에서 다운로드된 Provider 실행 파일 및 기타 Windows 실행 파일
+*.exe
+
+# ----------------------------------------
+# 클라우드 Provider 관련 파일
+# ----------------------------------------
+# AWS
+.aws/
+*credentials
+.awstag
+
+# Azure
+.azure/
